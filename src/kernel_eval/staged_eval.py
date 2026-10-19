@@ -345,17 +345,23 @@ def _write_compile_failure_report(
     package_info,
 ) -> None:
     cfg = _make_config(args, bench_root, enable_profiler=False)
-    from .eval.evaluator import Evaluator
+    from . import benches as _benches  # noqa: F401 -- register metadata loaders
+    from .eval.failure_synthesizer import FailureSynthesizer
+    from .registry.loader_registry import get_case_loader, get_task_loader
+    from .registry.matcher_registry import get_operator_matcher
 
-    evaluator = Evaluator(cfg, bench_name=args.bench_name)
+    # Reporting a failed build needs task metadata, not a device. In a masked
+    # process the external device ID may not even be a valid logical NPU ID.
+    operator_loader = get_task_loader(args.bench_name, tasks_root=cfg.tasks_root)
+    operator_matcher = get_operator_matcher(args.bench_name, operator_loader=operator_loader)
+    synthesizer = FailureSynthesizer(get_case_loader(args.bench_name, tasks_root=cfg.tasks_root))
     op_filter = [args.operator] if args.operator else None
-    failures = evaluator.failure_synthesizer.synthesize_all_compile_failures(
-        evaluator.operator_matcher,
+    failures = synthesizer.synthesize_all_compile_failures(
+        operator_matcher,
         package_info,
         operator_filter=op_filter,
     )
     _save_report(args, cfg, failures, stage="compile_failed", contains_performance=False)
-    evaluator.shutdown()
 
 
 def _compile(args: argparse.Namespace, bench_root: str) -> int:

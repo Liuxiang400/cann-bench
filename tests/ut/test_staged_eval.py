@@ -150,3 +150,30 @@ def test_merge_tags_perf_unmeasured_without_failing_case():
     assert case.perf_recheck["perf_failure_type"] == "timeout"
     assert merged.passed_cases == 1
     assert merged.failed_cases == 0
+
+
+def test_compile_failure_report_needs_no_device(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from kernel_eval.config import get_project_root
+    from kernel_eval.staged_eval import _write_compile_failure_report, create_parser
+    from kernel_eval.utils.device_manager import DeviceManager
+
+    def forbidden_device_init(*args, **kwargs):
+        raise AssertionError("compile failure reporting must not initialize NPU")
+
+    monkeypatch.setattr(DeviceManager, "__init__", forbidden_device_init)
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "1")
+    args = create_parser().parse_args([
+        "--operator", "Exp", "--device-id", "1", "--reports-dir", str(tmp_path),
+    ])
+    _write_compile_failure_report(
+        args, str(get_project_root() / "tasks"),
+        SimpleNamespace(compile_errors={"exp": "device compiler failed"}),
+    )
+    reports = [json.loads(path.read_text()) for path in tmp_path.glob("*.json")]
+    report = next(value for value in reports if value.get("result_stage") == "compile_failed")
+    assert report["contains_performance"] is False
+    assert report["operators"][0]["compilation_error"] == "device compiler failed"
+    assert report["operators"][0]["passed_cases"] == 0
