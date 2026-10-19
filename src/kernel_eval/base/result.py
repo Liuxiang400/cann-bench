@@ -87,7 +87,7 @@ class OutputResult(ABC):
     """
 
     index: int
-    passed: bool
+    passed: Optional[bool]
     dtype: str
     error_msg: str
 
@@ -97,7 +97,15 @@ class OutputResult(ABC):
 
     def is_passed(self) -> bool:
         """是否通过"""
-        return self.passed
+        return self.passed is True
+
+    def format_checks(self) -> Optional[str]:
+        checks = (getattr(self, "metadata", None) or {}).get("checks") or {}
+        if self.passed is None or checks.get("elementwise", {}).get("status") == "skipped":
+            states = ", ".join(f"{name}={check['status']}" for name, check in checks.items())
+            detail = f"; {self.error_msg}" if self.passed is False and self.error_msg else ""
+            return f"{self.dtype}[{getattr(self, 'name', None) or self.index}]: {states or 'elementwise=skipped'}{detail}"
+        return None
 
     def get_dtype(self) -> str:
         """获取数据类型"""

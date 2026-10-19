@@ -57,7 +57,7 @@ class RelativeErrorOutputResult(OutputResult):
     index: int
     name: str = ""
     dtype: str = ""
-    passed: bool = True
+    passed: Optional[bool] = True
     error_msg: str = ""
     mismatch_count: int = 0
     total_count: int = 0
@@ -94,6 +94,9 @@ class RelativeErrorOutputResult(OutputResult):
 
     def format_summary(self) -> str:
         """格式化摘要（相对误差标准特有展示逻辑）"""
+        checks_summary = self.format_checks()
+        if checks_summary is not None:
+            return checks_summary
         dtype_str = f"{self.dtype}[{self.name or self.index}]"
         dtype_category = self.metadata.get('dtype_category', '')
 

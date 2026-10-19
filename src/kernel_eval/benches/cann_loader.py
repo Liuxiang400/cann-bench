@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 
 # === 辅助函数 ===
 
+def _operator_payload(data: Any) -> Optional[Dict[str, Any]]:
+    """Return an operator mapping from legacy and release-bundle proto files."""
+    if not isinstance(data, dict):
+        return None
+    operator = data.get('operator', data)
+    return operator if isinstance(operator, dict) else None
+
 # === CANN 任务加载器 ===
 
 class CannTaskLoader(OperatorDirMixin, TaskLoader):
@@ -96,11 +103,11 @@ class CannTaskLoader(OperatorDirMixin, TaskLoader):
         with open(proto_path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
 
-        if not data or 'operator' not in data:
+        op_data = _operator_payload(data)
+        if not op_data:
             logger.warning("proto.yaml format error: %s", proto_path)
             return None
 
-        op_data = data['operator']
         task_spec = self._parse_operator(op_data, task_id, op_dir.name)
         self._cache[task_id] = task_spec
         return task_spec
@@ -135,8 +142,9 @@ class CannTaskLoader(OperatorDirMixin, TaskLoader):
             try:
                 with open(proto_path, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f)
-                if data and 'operator' in data:
-                    op_name = data['operator'].get('name', '')
+                op_data = _operator_payload(data)
+                if op_data:
+                    op_name = op_data.get('name', '')
                     if op_name.lower() == operator.lower():
                         rel_path = str(op_dir.relative_to(self.bench_root))
                         return self.get_operator(rel_path)
@@ -540,8 +548,9 @@ class GoldenLoader(GoldenLoaderBase):
             try:
                 with open(proto_path, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f)
-                if data and 'operator' in data:
-                    return data['operator'].get('name', '')
+                op_data = _operator_payload(data)
+                if op_data:
+                    return op_data.get('name', '')
             except Exception as e:
                 logger.warning("Failed to parse proto.yaml at %s: %s", proto_path, e)
         return Path(rel_path).name
@@ -556,8 +565,9 @@ class GoldenLoader(GoldenLoaderBase):
             try:
                 with open(proto_path, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f)
-                if data and 'operator' in data:
-                    schema = data['operator'].get('schema', '')
+                op_data = _operator_payload(data)
+                if op_data:
+                    schema = op_data.get('schema', '')
                     match = re.match(r'^(\w+)\s*\(', schema.strip())
                     if match:
                         self._func_cache[rel_path] = match.group(1)
@@ -591,8 +601,9 @@ class GoldenLoader(GoldenLoaderBase):
             try:
                 with open(proto_path, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f)
-                if data and 'operator' in data:
-                    op_name = data['operator'].get('name', '')
+                op_data = _operator_payload(data)
+                if op_data:
+                    op_name = op_data.get('name', '')
                     if op_name.lower() == operator.lower():
                         op_dir = proto_path.parent
                         rel_path = str(op_dir.relative_to(self.bench_root))

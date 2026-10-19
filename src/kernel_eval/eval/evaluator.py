@@ -56,7 +56,7 @@ from .accuracy_eval import AccuracyEvaluator, AccuracyResult
 from .perf_eval import PerfEvaluator, PerfResult
 from .results import EvalCaseResult, EvalOperatorResult, EvalSessionResult
 from .failure_synthesizer import FailureSynthesizer
-from .index_check import validate_index_gather_outputs
+from .index_check import apply_index_checks
 from ..registry.matcher_registry import get_operator_matcher
 
 # 导入 benches 模块，确保 Registry 已注册
@@ -354,6 +354,11 @@ class Evaluator:
                 diagnostic_context=self._format_output_diagnostic(ai_result),
             )
 
+            accuracy_result = apply_index_checks(
+                accuracy_result, op_info, params, case_attrs,
+                ai_result.outputs, golden_result.outputs,
+            )
+
             # 防作弊二次验证：用新鲜输入再跑一遍 golden + AI，两次都过才算 pass
             # 只在 config.enable_accuracy_retry=True 且第一次已通过时触发，避免开销
             if accuracy_result.passed and getattr(self.config, 'enable_accuracy_retry', False):
@@ -367,20 +372,6 @@ class Evaluator:
                     first_result=accuracy_result,
                     case_seed=case_seed,
                 )
-
-            # 索引类输出（TopK/ArgSort 等）的"指向值"校验（tie 顺序无关，见 issue #40）：
-            # 候选索引须指向其值输出对应的元素（x.gather(dim, idx) == values）。
-            # 仅当 proto 为某输出声明了 index_gather 时才生效，对其他算子零影响。
-            if accuracy_result.passed:
-                idx_ok, idx_msg = validate_index_gather_outputs(
-                    op_info, params, case_attrs, ai_result.outputs,
-                )
-                if not idx_ok:
-                    accuracy_result.passed = False
-                    accuracy_result.error_msg = (
-                        f"{accuracy_result.error_msg} | {idx_msg}"
-                        if accuracy_result.error_msg else idx_msg
-                    )
 
             # 填充 output_results 中的输出名称
             if hasattr(accuracy_result, 'output_results') and output_names:
@@ -1055,13 +1046,17 @@ class Evaluator:
                 ai_outs2 = self._apply_get_output(
                     get_output_func, ai_outs2, op_info, retry_attrs)
 
-            return self.accuracy_evaluator.evaluate(
+            result = self.accuracy_evaluator.evaluate(
                 ai_output=ai_outs2,
                 golden_output=golden_outs2,
                 dtype=dtype,
                 custom_thresholds=merged_thresholds,
                 native_output=None,
                 ignore_output_indices=ignore_output_indices,
+            )
+            return apply_index_checks(
+                result, self.operator_loader.get_operator(case.rel_path), params,
+                getattr(case, 'attrs', None) or {}, ai_result2.outputs, golden_result2.outputs,
             )
         except Exception as e:
             # 二次验证基础设施异常不应整体阻断评测；记 warn 并返回第一轮

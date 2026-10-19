@@ -148,6 +148,9 @@ class TestRelativeErrorChecker:
         assert result.is_passed()
         assert len(result.get_output_results()) == 2
         assert result.get_output_results()[1].get_error_msg() == "(跳过对比)"
+        assert result.get_output_results()[1].to_dict()["passed"] is None
+        assert result.get_output_results()[1].to_dict()["checks"]["elementwise"]["status"] == "skipped"
+        assert "exact match" not in result.get_output_results()[1].format_summary()
 
     def test_output_count_mismatch(self):
         """测试输出数量不匹配"""
@@ -172,6 +175,18 @@ class TestRelativeErrorChecker:
 
 class TestAllCloseChecker:
     """AllClose判断器测试"""
+
+    def test_skipped_output_is_not_a_pass_and_all_skipped_does_not_pass(self):
+        checker = AllCloseChecker()
+        result = checker.check([torch.tensor([123.])], [torch.tensor([0.])],
+                               dtype="float32", threshold=0.001, ignore_indices=[0])
+        assert not result.passed
+        output = result.output_results[0]
+        assert output.to_dict()["passed"] is None
+        assert "skipped" in output.format_summary()
+        restored = AllCloseOutputResult.from_dict(output.to_dict())
+        assert restored.passed is None
+        assert restored.to_dict()["checks"]["elementwise"]["status"] == "skipped"
 
     def test_single_output_pass(self):
         """测试单输出通过"""

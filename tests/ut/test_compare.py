@@ -112,6 +112,13 @@ class TestCompareResult:
         assert result.passed is False
         assert result.error_msg == "MARE exceeded threshold"
 
+    def test_all_outputs_skipped_does_not_pass(self):
+        result = compare_tensors([torch.tensor([123])], [torch.tensor([0])],
+                                 dtype="int64", threshold=0, ignore_output_indices=[0])
+        assert not result.passed
+        assert result.output_results[0].passed is None
+        assert result.to_dict()["output_results"][0]["checks"]["elementwise"]["status"] == "skipped"
+
     def test_accuracy_type_check_preserves_diagnostic_context(self):
         from kernel_eval.eval.accuracy_eval import AccuracyEvaluator
 

@@ -57,7 +57,7 @@ class SingleOutputResult:
     index: int                      # 输出索引
     name: str = ""                  # 输出名称（可选）
     dtype: str = ""                 # 数据类型
-    passed: bool = True
+    passed: Optional[bool] = True
     mismatch_count: int = 0         # 不匹配元素数
     total_count: int = 0            # 总元素数
     error_msg: str = ""
@@ -79,6 +79,8 @@ class SingleOutputResult:
     def format_summary(self) -> str:
         """格式化单输出判定摘要（通用实现，各 checker 子类覆盖此方法）"""
         dtype_str = f"{self.dtype}[{self.name or self.index}]"
+        if self.passed is None:
+            return f"{dtype_str}: elementwise=skipped"
         if self.passed:
             return f"{dtype_str}: ✅"
         else:
@@ -787,9 +789,10 @@ def compare_tensors(
                     index=i,
                     name="",  # 名称由调用方填充
                     dtype=str(out_tensor.dtype).replace('torch.', ''),
-                    passed=True,  # 跳过的输出视为通过
+                    passed=None,  # 未执行比较，不能伪造通过
                     error_msg="(跳过对比)",
-                    metadata={'dtype_category': 'int' if out_tensor.dtype in _INTEGER_DTYPES else 'float'},
+                    metadata={'dtype_category': 'int' if out_tensor.dtype in _INTEGER_DTYPES else 'float',
+                              'checks': {'elementwise': {'status': 'skipped'}}},
                 ))
                 continue
 
@@ -862,7 +865,7 @@ def compare_tensors(
             mere = 0.0
 
         # 最终通过条件
-        passed = all_passed
+        passed = all_passed and any(sr.passed is not None for sr in single_output_results)
 
         # 确定返回的 dtype 和 threshold
         # 如果有失败输出，返回第一个失败输出的阈值信息

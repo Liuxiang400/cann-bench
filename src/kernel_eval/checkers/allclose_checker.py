@@ -41,7 +41,7 @@ class AllCloseOutputResult(OutputResult):
     index: int
     name: str = ""
     dtype: str = ""
-    passed: bool = True
+    passed: Optional[bool] = True
     error_msg: str = ""
     mismatch_count: int = 0
     total_count: int = 0
@@ -78,6 +78,9 @@ class AllCloseOutputResult(OutputResult):
 
     def format_summary(self) -> str:
         """格式化摘要（allclose 标准特有展示逻辑）"""
+        checks_summary = self.format_checks()
+        if checks_summary is not None:
+            return checks_summary
         dtype_str = f"{self.dtype}[{self.name or self.index}]"
         atol = self.metadata.get('atol', 0)
         rtol = self.metadata.get('rtol', 0)
@@ -152,8 +155,9 @@ class AllCloseChecker(CorrectnessChecker):
                     index=i,
                     name=f"output_{i}",
                     dtype=dtype,
-                    passed=True,
+                    passed=None,
                     error_msg="(跳过对比)",
+                    metadata={"checks": {"elementwise": {"status": "skipped"}}},
                 ))
                 continue
 
@@ -206,7 +210,7 @@ class AllCloseChecker(CorrectnessChecker):
         agg_mismatch_ratio = agg_mismatch_count / agg_total_count if agg_total_count > 0 else 0.0
 
         return AccuracyResult(
-            passed=all_passed,
+            passed=all_passed and any(r.passed is not None for r in results),
             output_results=results,
             threshold=None,
             error_msg=None if all_passed else "精度不达标（allclose 失败）",
