@@ -51,6 +51,16 @@ NO_PERF=false
 PROFILER_LEVEL="Level1"
 EVAL_SEED=""  # 评测种子（默认: 0 = 确定性，-1 = 纯随机）
 
+# 分阶段评测入口（仅 --staged 流程生效；默认值保持旧行为）
+STAGE=""
+WHEEL=""
+HANDOFF_DIR=""
+CORRECTNESS_TIMEOUT_PER_CASE=""
+PERFORMANCE_TIMEOUT_PER_CASE=""
+CASE_IDS=()
+STAGE_PROGRESS=""
+NO_MERGE=false
+
 # 报告输出目录（默认在 main() 中根据 BENCH_NAME 动态设置）
 REPORTS_DIR_OVERRIDE=""
 
@@ -106,6 +116,16 @@ print_help() {
     echo "  --eval-seed <n>           输入生成确定性种子（默认: 0 = 自动确定性）。"
     echo "                            改变种子可获得不同但可复现的输入。-1 表示纯随机。"
     echo "  --single-pass             使用旧的一体化 eval 流程（默认使用编译/精度/性能三阶段）"
+    echo ""
+    echo "分阶段入口（仅 --staged 流程生效）:"
+    echo "  --stage <name>            只运行指定阶段: all(默认)/compile/correctness/performance/merge"
+    echo "  --wheel <path>            安装预编译的 cann_bench wheel，跳过编译"
+    echo "  --handoff-dir <dir>       跨阶段产物目录（compile.json/correctness.json/performance.json）"
+    echo "  --correctness-timeout-per-case <n>  correctness 阶段单 case 内层超时（秒）"
+    echo "  --performance-timeout-per-case <n>  performance 阶段单 case 内层超时（秒）"
+    echo "  --case-ids <n> [<n> ...]  performance 阶段仅评测这些 case 编号（有界补测）"
+    echo "  --stage-progress <path>   可信阶段进度 JSON 路径（阶段开始/结束时原子替换写入）"
+    echo "  --no-merge                performance 阶段不合并 correctness 结果（有界性能 gate）"
     echo ""
     echo "其他选项:"
     echo "  -v, --verbose             详细输出"
@@ -246,6 +266,46 @@ while [[ $# -gt 0 ]]; do
             STAGED_EVAL=true
             shift
             ;;
+        --stage)
+            STAGE="$2"
+            shift 2
+            ;;
+        --wheel)
+            WHEEL="$2"
+            shift 2
+            ;;
+        --handoff-dir)
+            HANDOFF_DIR="$2"
+            shift 2
+            ;;
+        --correctness-timeout-per-case)
+            CORRECTNESS_TIMEOUT_PER_CASE="$2"
+            shift 2
+            ;;
+        --performance-timeout-per-case)
+            PERFORMANCE_TIMEOUT_PER_CASE="$2"
+            shift 2
+            ;;
+        --case-ids)
+            shift
+            CASE_IDS=()
+            while [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; do
+                CASE_IDS+=("$1")
+                shift
+            done
+            if [[ ${#CASE_IDS[@]} -eq 0 ]]; then
+                log_error "--case-ids 需要至少一个 case 编号"
+                exit 1
+            fi
+            ;;
+        --stage-progress)
+            STAGE_PROGRESS="$2"
+            shift 2
+            ;;
+        --no-merge)
+            NO_MERGE=true
+            shift
+            ;;
         -v|--verbose)
             VERBOSE=true
             shift
@@ -270,6 +330,14 @@ done
 # 处理位置参数：第一个位置参数作为源码目录（如果 --source-dir 未显式指定）
 if [[ -z "${SOURCE_DIR}" && ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
     SOURCE_DIR="${POSITIONAL_ARGS[0]}"
+fi
+
+# 分阶段参数只由 --staged 流程消费；--single-pass 下明确提示而不是静默丢弃。
+if [[ "${STAGED_EVAL}" != true ]]; then
+    if [[ -n "${STAGE}${WHEEL}${HANDOFF_DIR}${CORRECTNESS_TIMEOUT_PER_CASE}${PERFORMANCE_TIMEOUT_PER_CASE}${STAGE_PROGRESS}" \
+        || ${#CASE_IDS[@]} -gt 0 || "${NO_MERGE}" == true ]]; then
+        log_warn "--stage/--wheel/--handoff-dir/--*-timeout-per-case/--case-ids/--stage-progress/--no-merge 仅在 --staged 流程生效，--single-pass 下忽略"
+    fi
 fi
 
 # 检查Python环境
@@ -385,6 +453,36 @@ build_cmd_args() {
                 CMD_ARGS="${CMD_ARGS} --no-perf"
             fi
 
+            # 分阶段入口参数：只在 --staged 流程（staged-eval）下转发给
+            # python -m kernel_eval.staged_eval；--timeout-per-process 仍按旧契约
+            # 映射到 --timeout-per-operator（见上方性能配置）。
+            if [[ "${CMD_ARGS}" == staged-eval* ]]; then
+                if [[ -n "${STAGE}" ]]; then
+                    CMD_ARGS="${CMD_ARGS} --stage ${STAGE}"
+                fi
+                if [[ -n "${WHEEL}" ]]; then
+                    CMD_ARGS="${CMD_ARGS} --wheel ${WHEEL}"
+                fi
+                if [[ -n "${HANDOFF_DIR}" ]]; then
+                    CMD_ARGS="${CMD_ARGS} --handoff-dir ${HANDOFF_DIR}"
+                fi
+                if [[ -n "${CORRECTNESS_TIMEOUT_PER_CASE}" ]]; then
+                    CMD_ARGS="${CMD_ARGS} --correctness-timeout-per-case ${CORRECTNESS_TIMEOUT_PER_CASE}"
+                fi
+                if [[ -n "${PERFORMANCE_TIMEOUT_PER_CASE}" ]]; then
+                    CMD_ARGS="${CMD_ARGS} --performance-timeout-per-case ${PERFORMANCE_TIMEOUT_PER_CASE}"
+                fi
+                if [[ ${#CASE_IDS[@]} -gt 0 ]]; then
+                    CMD_ARGS="${CMD_ARGS} --case-ids ${CASE_IDS[*]}"
+                fi
+                if [[ -n "${STAGE_PROGRESS}" ]]; then
+                    CMD_ARGS="${CMD_ARGS} --stage-progress ${STAGE_PROGRESS}"
+                fi
+                if [[ "${NO_MERGE}" == true ]]; then
+                    CMD_ARGS="${CMD_ARGS} --no-merge"
+                fi
+            fi
+
             # 多进程并行参数（通过环境变量传递给底层）
             export TASKS_PROCESSES_PER_CARD="${PROCESSES_PER_CARD}"
             export TASKS_TIMEOUT_PER_PROCESS="${TIMEOUT_PER_PROCESS}"
@@ -471,10 +569,11 @@ main() {
     # V3 Anti-Cheat: 确保 cann_bench_utils 已安装（强制依赖）
     ensure_cann_bench_utils || exit 1
 
-    # 仅在有 source-dir 时卸载 cann_bench（避免与即将编译安装的包冲突）
+    # 仅在有 source-dir 时卸载 cann_bench（避免与即将编译安装的包冲突）；
+    # 显式 --wheel 由 pip --force-reinstall 直接覆盖，跳过卸载以免误删当前安装。
     # 无 source-dir 时保留已安装的包（golden whl 或 submission whl）
     # 注意: cann_bench_utils 永远不会被卸载（V3 Anti-Cheat 强制依赖）
-    if [[ -n "${SOURCE_DIR}" ]]; then
+    if [[ -n "${SOURCE_DIR}" && -z "${WHEEL}" ]]; then
         uninstall_packages
     fi
 
@@ -518,6 +617,15 @@ main() {
         fi
         if [[ "${STAGED_EVAL}" == true && "${BENCH_NAME}" == "cann" && "${DEVICE_TYPE:-npu}" == "npu" ]]; then
             log_info "评测模式: 编译/精度/性能三阶段"
+            if [[ -n "${STAGE}" ]]; then
+                log_info "阶段: ${STAGE}"
+            fi
+            if [[ -n "${WHEEL}" ]]; then
+                log_info "预编译 wheel: ${WHEEL}"
+            fi
+            if [[ -n "${HANDOFF_DIR}" ]]; then
+                log_info "跨阶段产物目录: ${HANDOFF_DIR}"
+            fi
         else
             log_info "评测模式: 单次 eval"
         fi
