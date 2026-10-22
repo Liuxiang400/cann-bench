@@ -92,22 +92,43 @@ def grouped_matmul_swiglu_quant_ref(inputs, attrs):
 
 
 def gru_ref(inputs, attrs):
-    """torch.nn.functional has no direct GRU functional. Use torch.nn.GRU
-    by re-binding parameters into a temporary module."""
+    """Inference GRU with the task's supplied weights, state and attributes."""
     import torch.nn as nn
-    x = inputs[0]  # [seq, batch, input]
-    hidden_size = attrs.get("hidden_size") or attrs.get("hiddenSize")
-    num_layers = int(attrs.get("num_layers", 1))
+    x, weight_ih, weight_hh = inputs[:3]
+    bias_ih = inputs[3] if len(inputs) > 3 else None
+    bias_hh = inputs[4] if len(inputs) > 4 else None
+    h0 = inputs[5] if len(inputs) > 5 else None
+    hidden_size = int(attrs['hiddenSize'])
+    num_layers = int(attrs.get('numLayers', 1))
+    has_bias = bool(attrs.get('bias', True))
+    batch_first = bool(attrs.get('batchFirst', False))
     bidirectional = bool(attrs.get("bidirectional", False))
-    if hidden_size is None:
-        # infer from W_ih shape
-        w_ih = inputs[1] if not isinstance(inputs[1], list) else inputs[1][0]
-        hidden_size = w_ih.shape[0] // 3
-    layer = nn.GRU(input_size=x.shape[-1], hidden_size=int(hidden_size),
-                   num_layers=num_layers, bidirectional=bidirectional, batch_first=False)
-    layer = layer.to(device=x.device, dtype=x.dtype)
-    out, h = layer(x)
-    return out, h
+    directions = 2 if bidirectional else 1
+    if len(weight_ih) != num_layers * directions or len(weight_hh) != num_layers * directions:
+        raise ValueError('GRU weight lists do not match numLayers/bidirectional')
+    layer = nn.GRU(input_size=int(attrs['inputSize']), hidden_size=hidden_size,
+                   num_layers=num_layers, bias=has_bias, batch_first=batch_first,
+                   dropout=float(attrs.get('dropout', 0)) if num_layers > 1 else 0,
+                   bidirectional=bidirectional).to(dtype=x.dtype)
+    layer.eval()
+    for level in range(num_layers):
+        input_width = int(attrs['inputSize']) if level == 0 else hidden_size * directions
+        for direction in range(directions):
+            index = level * directions + direction
+            suffix = f'l{level}' + ('_reverse' if direction else '')
+            setattr(layer, f'weight_ih_{suffix}', nn.Parameter(
+                weight_ih[index][:3 * hidden_size, :input_width], requires_grad=False))
+            setattr(layer, f'weight_hh_{suffix}', nn.Parameter(
+                weight_hh[index][:3 * hidden_size, :hidden_size], requires_grad=False))
+            if has_bias:
+                for name, values in (('bias_ih', bias_ih), ('bias_hh', bias_hh)):
+                    value = (values[index][:3 * hidden_size] if values is not None else
+                             torch.zeros(3 * hidden_size, dtype=x.dtype, device=x.device))
+                    setattr(layer, f'{name}_{suffix}', nn.Parameter(value, requires_grad=False))
+    if h0 is not None:
+        h0 = h0.to(device=x.device, dtype=x.dtype)
+    with torch.no_grad():
+        return layer(x, h0)
 
 
 def lstm_ref(inputs, attrs):

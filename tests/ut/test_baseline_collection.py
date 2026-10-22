@@ -305,3 +305,52 @@ class TestCollectBaselineUtils:
 
 # 导入 math 供 test_normalize_attrs_inf_nan 使用
 import math
+
+@pytest.mark.parametrize('layers,bidirectional,batch_first,bias', [
+    (1, False, False, True),
+    (2, True, True, True),
+    (1, True, False, False),
+])
+def test_gru_reference_uses_task_weights_and_attributes(layers, bidirectional, batch_first, bias):
+    import importlib.util
+    path = PROJECT_ROOT / 'tasks/level4/gru/golden.py'
+    spec = importlib.util.spec_from_file_location('test_gru_golden', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    generator = torch.Generator().manual_seed(7)
+    directions = 2 if bidirectional else 1
+    size, hidden, batch, seq = 3, 2, 2, 4
+    x = torch.randn((batch, seq, size) if batch_first else (seq, batch, size), generator=generator)
+    wi, wh, bi, bh = [], [], [], []
+    for level in range(layers):
+        for _ in range(directions):
+            wi.append(torch.randn(3*hidden, size if level == 0 else hidden*directions, generator=generator))
+            wh.append(torch.randn(3*hidden, hidden, generator=generator))
+            bi.append(torch.randn(3*hidden, generator=generator))
+            bh.append(torch.randn(3*hidden, generator=generator))
+    h0 = torch.randn(layers*directions, batch, hidden, generator=generator)
+    inputs = [x, wi, wh, bi if bias else None, bh if bias else None, h0]
+    attrs = dict(inputSize=size, hiddenSize=hidden, numLayers=layers, bias=bias,
+                 batchFirst=batch_first, bidirectional=bidirectional, dropout=0.2)
+    reference = ref_registry.get_ref('level4/gru')
+    with torch.no_grad():
+        actual = reference(inputs, attrs)
+        expected = module.gru(x=x, weight_ih=wi, weight_hh=wh,
+                              bias_ih=inputs[3], bias_hh=inputs[4], h0=h0, **attrs)
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e, rtol=0, atol=0)
+    changed = [x, [torch.zeros_like(wi[0])] + wi[1:], wh, inputs[3], inputs[4], h0]
+    torch.manual_seed(123)
+    first = reference(inputs, attrs)[0]
+    torch.manual_seed(123)
+    second = reference(changed, attrs)[0]
+    assert not torch.allclose(first, second), 'GRU must consume the supplied weights'
+
+
+def test_quant_per_token_scale_keeps_float_scale_for_native_api():
+    values = [torch.zeros(2, 3, dtype=torch.int8), torch.zeros(3, 4, dtype=torch.int8),
+              torch.ones(4), None, torch.ones(2)]
+    result = bench_inputs.apply_npu_op_aliases(values, 'level3/quant_matmul',
+                                               {'output_dtype': 'float16'})
+    assert result is values
+    assert result[2].dtype == torch.float32

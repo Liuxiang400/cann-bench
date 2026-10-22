@@ -256,17 +256,23 @@ def nms_ref(inputs, attrs):
 
 
 def quant_matmul_ref(inputs, attrs):
-    """torch_npu.npu_quant_matmul(x1, x2, scale, pertoken_scale=None, bias=None, output_dtype=...)."""
+    """Tensor slots follow proto: x1, x2, scale, offset, pertoken_scale, bias."""
     import torch_npu
     if hasattr(torch_npu, "npu_quant_matmul"):
         x1, x2, scale = inputs[0], inputs[1], inputs[2]
-        pertoken = inputs[3] if len(inputs) > 3 else None
-        bias = inputs[4] if len(inputs) > 4 else None
+        offset = inputs[3] if len(inputs) > 3 else None
+        pertoken = inputs[4] if len(inputs) > 4 else None
+        bias = inputs[5] if len(inputs) > 5 else None
+        # On A2, fp16 output with a floating post-scale bias requires the
+        # per-token API path. Unit token scales preserve the task's equation.
+        if (pertoken is None and bias is not None and bias.is_floating_point()
+                and attrs.get('output_dtype') == 'float16'):
+            pertoken = torch.ones(x1.shape[-2], dtype=torch.float32, device=x1.device)
         kwargs = {}
-        if "output_dtype" in attrs:
-            kwargs["output_dtype"] = getattr(torch, attrs["output_dtype"], None)
+        if attrs.get('output_dtype') is not None:
+            kwargs['output_dtype'] = getattr(torch, attrs['output_dtype'])
         return torch_npu.npu_quant_matmul(x1, x2, scale,
-                                          pertoken_scale=pertoken, bias=bias, **kwargs)
+                                          offset=offset, pertoken_scale=pertoken, bias=bias, **kwargs)
     return None
 
 

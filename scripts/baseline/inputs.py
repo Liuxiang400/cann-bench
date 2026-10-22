@@ -321,8 +321,11 @@ def _quant_matmul_prepack_scale(inputs: List[InputT], attrs: Dict[str, Any]) -> 
     scale = inputs[2]
     if not isinstance(scale, torch.Tensor) or scale.dtype != torch.float32:
         return inputs
-    pertoken = inputs[3] if len(inputs) > 3 else None
+    pertoken = inputs[4] if len(inputs) > 4 else None
     if pertoken is not None:
+        return inputs
+    bias = inputs[5] if len(inputs) > 5 else None
+    if isinstance(bias, torch.Tensor) and bias.is_floating_point():
         return inputs
     import torch_npu  # local import to keep CPU-only paths import-free
     packed = torch_npu.npu_trans_quant_param(scale)
